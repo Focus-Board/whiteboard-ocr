@@ -1,41 +1,40 @@
+import threading
+
 import torch
-from transformers import TrOCRProcessor, VisionEncoderDecoderModel
 from PIL import Image
+from transformers import TrOCRProcessor, VisionEncoderDecoderModel
 
 class TrOCRManager:
-    _instance = None
+    def __init__(self, modelName: str = "microsoft/trocr-large-handwritten") -> None:
+        self.modelName = modelName
+        self.device = torch.device("cpu")
+        self._lock = threading.Lock()
+        self._isLoaded = False
+        self.processor = None
+        self.model = None
 
-    def __new__(cls, model_name = "microsoft/trocr-base-handwritten"):
-        if cls._instance is None:
-            cls._instance = super(TrOCRManager, cls).__new__(cls)
-            cls._instance._initialize(model_name)
-        return cls._instance
-    
-    def __init__(self, model_name = "microsoft/trocr-base-handwritten"):
-        if self._initialized:
-            return
-        
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Loading TrOCR model on device: {self.device}")
-        self.processor = TrOCRProcessor.from_pretrained(model_name)
-        self.model = VisionEncoderDecoderModel.from_pretrained(model_name).to(self.device)
-        self.model.eval()
-        self._initialized = True
-    
+    def load(self) -> None:
+        with self._lock:
+            if self._isLoaded:
+                return
+
+            print(f"Loading TrOCR model on device: {self.device}")
+            self.processor = TrOCRProcessor.from_pretrained(self.modelName)
+            self.model = VisionEncoderDecoderModel.from_pretrained(self.modelName).to(self.device)
+            self.model.eval()
+            self._isLoaded = True
+
     def predict(self, image: Image.Image) -> str:
-        """
-        Perform OCR on a Single Line Image
-        """
+        if not self._isLoaded:
+            raise RuntimeError("TrOCR model is not loaded. Call load() at startup.")
 
         if image.mode != "RGB":
             image = image.convert("RGB")
 
-        pixel_values = self.processor(images=image, return_tensors="pt").pixel_values
-        pixel_values = pixel_values.to(self.device)
+        pixelValues = self.processor(images=image, return_tensors="pt").pixel_values.to(self.device)
 
-        with torch.no_grad():
-            generated_ids = self.model.generate(pixel_values, max_new_tokens=256)
+        with torch.inference_mode():
+            generatedIds = self.model.generate(pixelValues, max_new_tokens=256)
 
-            text = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-
-        return text
+        text = self.processor.batch_decode(generatedIds, skip_special_tokens=True)[0]
+        return text.strip()
