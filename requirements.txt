@@ -1,4 +1,8 @@
+easyocr==1.7.2
 fastapi==0.135.3
+numpy==2.4.4
+opencv_python==4.10.0.84
+opencv_python_headless==4.11.0.86
 Pillow==12.2.0
 pydantic==2.13.0
 torch==2.4.1+cu124

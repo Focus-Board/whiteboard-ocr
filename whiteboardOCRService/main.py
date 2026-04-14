@@ -3,6 +3,7 @@ from PIL import Image
 import io
 
 from whiteboardOCRService.api.routes import router as jobsRouter
+from whiteboardOCRService.core.config import TROCR_ALLOW_ONLINE_FALLBACK, TROCR_LOCAL_FILES_ONLY
 from whiteboardOCRService.models.trocr import TrOCRManager
 
 app = FastAPI(title="WhiteboardUnderstandingService", version="0.1.0")
@@ -10,7 +11,10 @@ ocrManager = TrOCRManager()
 
 @app.on_event("startup")
 async def onStartup() -> None:
-    ocrManager.load()
+    ocrManager.load(
+        localFilesOnly=TROCR_LOCAL_FILES_ONLY,
+        allowOnlineFallback=TROCR_ALLOW_ONLINE_FALLBACK,
+    )
 
 @app.get("/health")
 async def health() -> dict[str, str]:
