@@ -42,20 +42,32 @@ async def getJobStatus(jobId: str) -> JobStatusResponse:
     job = jobStore.getJob(jobId)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return JobStatusResponse(jobId=job.jobId, status=job.status)
+    return JobStatusResponse(jobId=job.jobId, status=job.status, error=job.error)
 
 @router.get("/jobs/{jobId}/result", response_model=JobResultResponse)
 async def getJobResult(jobId: str) -> JobResultResponse:
     job = jobStore.getJob(jobId)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status == JobStatus.failed:
+        return JobResultResponse(
+            jobId=job.jobId,
+            status=job.status,
+            text="",
+            structured={},
+            error=job.error or "Unknown processing error",
+        )
+
     if job.status != JobStatus.done:
         raise HTTPException(status_code=409, detail=f"Job is not completed yet. Current status: {job.status}.")
+
     return JobResultResponse(
         jobId=job.jobId,
         status=job.status,
         text=job.text or "",
         structured=job.structured or {},
+        error=job.error,
     )
 
 def _resolveInputType(file: UploadFile) -> str:
