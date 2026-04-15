@@ -30,6 +30,10 @@ class JobResultResponse(BaseModel):
     jobId: str = Field(..., description="Unique job identifier")
     status: JobStatus = Field(..., description="Final or current job status")
     text: str = Field(default="", description="Raw extracted text from OCR")
+    calendarDraft: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Normalized JSON draft from OCR extraction for user review",
+    )
     structured: dict[str, Any] = Field(
         default_factory=dict,
         description="Parsed structure: tasks, notes, calendarItems, etc.",

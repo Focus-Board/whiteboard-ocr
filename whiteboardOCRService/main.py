@@ -18,6 +18,7 @@ async def onStartup() -> None:
         localFilesOnly=TROCR_LOCAL_FILES_ONLY,
         allowOnlineFallback=TROCR_ALLOW_ONLINE_FALLBACK,
     )
+    app.state.ocrManager = ocrManager
 
     global workerTask
     if workerTask is None or workerTask.done():
@@ -34,16 +35,19 @@ async def onShutdown() -> None:
     with suppress(asyncio.CancelledError):
         await workerTask
     workerTask = None
+    app.state.ocrManager = ocrManager
 
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 @app.post("/ocr")
-async def performOcr(file: UploadFile = File(...)) -> dict[str, str]:
+async def performOcr(file: UploadFile = File(...)) -> dict[str, object]:
     imageBytes = await file.read()
     result = processImageBytes(imageBytes, ocrManager)
-    text = result.text
-    return {"text": text}
+    return {
+        "text": result.text,
+        "calendarDraft": result.structured.get("calendarDraft", {}),
+    }
 
 app.include_router(jobsRouter)
