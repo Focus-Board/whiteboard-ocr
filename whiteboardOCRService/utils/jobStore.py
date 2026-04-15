@@ -65,6 +65,9 @@ class JobStore:
     def markDone(self, jobId: str, *, text: str, structured: dict[str, Any]) -> None:
         self._updateJob(jobId, status=JobStatus.done, text=text, structured=structured)
 
+    def updateStructured(self, jobId: str, *, structured: dict[str, Any]) -> None:
+        self._updateJob(jobId, structured=structured)
+
     def markFailed(self, jobId: str, error: str) -> None:
         self._updateJob(jobId, status=JobStatus.failed, error=error)
 

@@ -39,3 +39,25 @@ class JobResultResponse(BaseModel):
         description="Parsed structure: tasks, notes, calendarItems, etc.",
     )
     error: str | None = Field(default=None, description="Error message when status is 'failed'")
+
+
+class ApproveDraftRequest(BaseModel):
+    """Request body for approving a reviewed/edited calendar draft."""
+    calendarDraft: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Reviewed or edited calendar draft provided by the app",
+    )
+
+
+class ApproveDraftResponse(BaseModel):
+    """Response after approving a draft and generating server upload artifact."""
+    jobId: str = Field(..., description="Unique job identifier")
+    status: JobStatus = Field(..., description="Current job status")
+    approvedCalendarDraft: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Validated and normalized draft accepted by the server",
+    )
+    uploadArtifact: dict[str, str] = Field(
+        default_factory=dict,
+        description="Upload-ready calendar artifact to pass to main server display endpoint",
+    )

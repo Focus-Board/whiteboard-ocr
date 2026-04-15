@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from ..core.config import API_PREFIX
-from ..schemas.jobs import JobStatus, JobResultResponse, JobSubmitResponse, JobStatusResponse
+from ..parsing import buildVjournalFromDraft, parseCalendarDraftFromUnknown
+from ..schemas.jobs import (
+    ApproveDraftRequest,
+    ApproveDraftResponse,
+    JobStatus,
+    JobResultResponse,
+    JobStatusResponse,
+    JobSubmitResponse,
+)
 from ..pipeline import buildOcrDebugArtifact
 from ..utils.jobStore import jobStore, jobQueue
 
@@ -123,6 +132,46 @@ async def getJobResult(jobId: str) -> JobResultResponse:
         calendarDraft=(job.structured or {}).get("calendarDraft", {}),
         structured=job.structured or {},
         error=job.error,
+    )
+
+
+@router.post("/jobs/{jobId}/approve", response_model=ApproveDraftResponse)
+async def approveJobDraft(jobId: str, payload: ApproveDraftRequest) -> ApproveDraftResponse:
+    job = jobStore.getJob(jobId)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status == JobStatus.failed:
+        raise HTTPException(status_code=409, detail="Cannot approve a failed job")
+
+    if job.status != JobStatus.done:
+        raise HTTPException(status_code=409, detail=f"Job is not completed yet. Current status: {job.status}.")
+
+    parsedDraft = parseCalendarDraftFromUnknown(
+        payload.calendarDraft,
+        fallbackSourceText=job.text or "",
+    )
+    approvedDraft = parsedDraft.model_dump()
+    vjournal = buildVjournalFromDraft(parsedDraft)
+
+    structured = dict(job.structured or {})
+    structured["calendarDraft"] = approvedDraft
+    structured["approval"] = {
+        "approvedAt": datetime.now(timezone.utc).isoformat(),
+        "status": "approved",
+    }
+    structured["serverVjournal"] = vjournal
+    jobStore.updateStructured(jobId, structured=structured)
+
+    return ApproveDraftResponse(
+        jobId=job.jobId,
+        status=job.status,
+        approvedCalendarDraft=approvedDraft,
+        uploadArtifact={
+            "contentType": "text/calendar",
+            "fileName": f"{job.jobId}.ics",
+            "payload": vjournal,
+        },
     )
 
 def _resolveInputType(file: UploadFile) -> str:
