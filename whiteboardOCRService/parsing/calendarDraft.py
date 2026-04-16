@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
-from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -14,11 +13,10 @@ EventType = Literal["event"]
 
 class CalendarEvent(BaseModel):
     type: EventType = "event"
-    uid: str = Field(default_factory=lambda: str(uuid4()))
     title: str = Field(min_length=1)
     description: str | None = None
     start_time: str = Field(description="ISO-8601 datetime")
-    end_time: str | None = Field(default=None, description="ISO-8601 datetime")
+    end_time: str = Field(description="ISO-8601 datetime")
     all_day: bool = False
     location: str | None = None
 
@@ -37,11 +35,10 @@ def getCalendarDraftTemplate() -> dict[str, Any]:
         "events": [
             {
                 "type": "event",
-                "uid": "<uuid-v4>",
                 "title": "<event title>",
                 "description": None,
                 "start_time": "<ISO-8601 datetime>",
-                "end_time": "<ISO-8601 datetime or null>",
+                "end_time": "<ISO-8601 datetime>",
                 "all_day": False,
                 "location": None,
             },
@@ -58,14 +55,23 @@ def buildLlmExtractionPrompt(ocrText: str, *, timezone: str = "UTC") -> str:
         f"timezone to use: {timezone}\n"
         "Rules:\n"
         "- DO NOT return tasks\n"
-        "- Event shape must be exactly: type, uid, title, description, start_time, end_time, all_day, location\n"
+        "- Event shape must be exactly: type, title, description, start_time, end_time, all_day, location\n"
         "- start_time and end_time must be ISO-8601 with timezone offset\n"
+        "- if end_time is unknown, set it to start_time plus one hour\n"
         "- Put non-event actionable text into notes\n"
         "- Do NOT copy placeholder/example values from the schema; use OCR-derived values only\n"
         "- Keep unknown nullable fields as null\n\n"
         f"Target JSON shape example:\n{templateJson}\n\n"
         f"OCR text:\n{ocrText}\n"
     )
+
+
+def _end_time_with_default(startTimeIso: str, endTimeIso: str | None) -> str:
+    if endTimeIso:
+        return endTimeIso
+
+    parsedStart = datetime.fromisoformat(startTimeIso.replace("Z", "+00:00"))
+    return (parsedStart + timedelta(hours=1)).isoformat()
 
 
 def _extractJsonPayload(value: str) -> str:
@@ -146,13 +152,17 @@ def _normalizeEventPayload(item: dict[str, Any], *, fallbackSourceText: str = ""
     if not startTime:
         return None
 
+    try:
+        normalizedEndTime = _end_time_with_default(startTime, endTime)
+    except ValueError:
+        return None
+
     return {
         "type": "event",
-        "uid": str(normalized.get("uid") or uuid4()),
         "title": title,
         "description": None if normalized.get("description") in (None, "") else str(normalized.get("description")),
         "start_time": startTime,
-        "end_time": endTime,
+        "end_time": normalizedEndTime,
         "all_day": bool(normalized.get("all_day") or False),
         "location": None if normalized.get("location") in (None, "") else str(normalized.get("location")),
     }
@@ -188,13 +198,17 @@ def _normalizeLegacyItemPayload(item: dict[str, Any], timezoneName: str) -> tupl
         noteText = str(item.get("sourceText") or item.get("description") or title).strip()
         return None, noteText or None
 
+    try:
+        normalizedEndIso = _end_time_with_default(startIso, endIso)
+    except ValueError:
+        return None, None
+
     return {
         "type": "event",
-        "uid": str(item.get("uid") or uuid4()),
         "title": title,
         "description": None if item.get("description") in (None, "") else str(item.get("description")),
         "start_time": startIso,
-        "end_time": endIso,
+        "end_time": normalizedEndIso,
         "all_day": allDay,
         "location": None if item.get("location") in (None, "") else str(item.get("location")),
     }, None
@@ -212,6 +226,7 @@ def _looks_placeholder(value: str) -> bool:
         return True
     placeholderMarkers = {
         "uuid-v4",
+        "uuid",
         "event title",
         "note text",
         "iso-8601",
