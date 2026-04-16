@@ -1,90 +1,68 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime, timezone
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
 
-CalendarItemType = Literal["event", "task", "note"]
+EventType = Literal["event"]
 
 
-class CalendarItem(BaseModel):
-    itemType: CalendarItemType
+class CalendarEvent(BaseModel):
+    type: EventType = "event"
+    uid: str = Field(default_factory=lambda: str(uuid4()))
     title: str = Field(min_length=1)
-    description: str = ""
-    date: str | None = Field(default=None, description="YYYY-MM-DD when known")
-    startTime: str | None = Field(default=None, description="HH:MM 24h when known")
-    endTime: str | None = Field(default=None, description="HH:MM 24h when known")
-    dueDate: str | None = Field(default=None, description="YYYY-MM-DD for tasks")
-    dueTime: str | None = Field(default=None, description="HH:MM 24h for tasks")
-    allDay: bool = False
-    location: str = ""
-    tags: list[str] = Field(default_factory=list)
-    sourceText: str = ""
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    description: str | None = None
+    start_time: str = Field(description="ISO-8601 datetime")
+    end_time: str | None = Field(default=None, description="ISO-8601 datetime")
+    all_day: bool = False
+    location: str | None = None
 
 
 class CalendarDraft(BaseModel):
     timezone: str = "UTC"
-    summary: str = "Whiteboard draft"
-    sourceText: str = ""
-    items: list[CalendarItem] = Field(default_factory=list)
+    source_text: str = ""
+    events: list[CalendarEvent] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 def getCalendarDraftTemplate() -> dict[str, Any]:
     return {
         "timezone": "UTC",
-        "summary": "Whiteboard draft",
-        "sourceText": "original OCR text",
-        "items": [
+        "source_text": "original OCR text",
+        "events": [
             {
-                "itemType": "event",
-                "title": "Algebra review",
-                "description": "Chapter 2",
-                "date": "2026-04-20",
-                "startTime": "14:00",
-                "endTime": "15:00",
-                "allDay": False,
-                "location": "Classroom",
-                "tags": ["school"],
-                "sourceText": "Review session Monday 2pm",
-                "confidence": 0.91,
-            },
-            {
-                "itemType": "task",
-                "title": "Submit worksheet",
-                "description": "Solve problems 1-10",
-                "dueDate": "2026-04-22",
-                "dueTime": "23:59",
-                "allDay": False,
-                "tags": ["homework"],
-                "sourceText": "worksheet due Wednesday",
-                "confidence": 0.86,
-            },
-            {
-                "itemType": "note",
-                "title": "Lesson objective",
-                "description": "Understand what algebra is and its purpose.",
-                "tags": ["lesson"],
-                "sourceText": "Lesson Objectives: ...",
-                "confidence": 0.82,
+                "type": "event",
+                "uid": "<uuid-v4>",
+                "title": "<event title>",
+                "description": None,
+                "start_time": "<ISO-8601 datetime>",
+                "end_time": "<ISO-8601 datetime or null>",
+                "all_day": False,
+                "location": None,
             },
         ],
+        "notes": ["<note text>"],
     }
 
 
 def buildLlmExtractionPrompt(ocrText: str, *, timezone: str = "UTC") -> str:
     templateJson = json.dumps(getCalendarDraftTemplate(), indent=2)
     return (
-        "Extract tasks, events, and notes from OCR text into STRICT JSON. "
+        "Extract only events and notes from OCR text into STRICT JSON. "
         "Do not include markdown or explanation. Return only one JSON object matching this schema shape.\n\n"
         f"timezone to use: {timezone}\n"
         "Rules:\n"
-        "- Use itemType as one of: event, task, note\n"
-        "- Keep unknown date/time fields as null\n"
-        "- confidence is 0..1\n"
-        "- Preserve sourceText snippets\n\n"
+        "- DO NOT return tasks\n"
+        "- Event shape must be exactly: type, uid, title, description, start_time, end_time, all_day, location\n"
+        "- start_time and end_time must be ISO-8601 with timezone offset\n"
+        "- Put non-event actionable text into notes\n"
+        "- Do NOT copy placeholder/example values from the schema; use OCR-derived values only\n"
+        "- Keep unknown nullable fields as null\n\n"
         f"Target JSON shape example:\n{templateJson}\n\n"
         f"OCR text:\n{ocrText}\n"
     )
@@ -99,58 +77,230 @@ def _extractJsonPayload(value: str) -> str:
     return stripped
 
 
-def _normalizeItemPayload(item: dict[str, Any], *, fallbackSourceText: str = "") -> dict[str, Any]:
+def _to_iso8601(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    parsedRaw = raw.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(parsedRaw)
+    except ValueError:
+        timeMatch = re.match(r"^(?P<hour>\d{1,2}):(\d{2})$", raw)
+        if timeMatch:
+            hour, minute = raw.split(":", maxsplit=1)
+            now = datetime.now(timezone.utc)
+            dt = datetime(
+                year=now.year,
+                month=now.month,
+                day=now.day,
+                hour=int(hour),
+                minute=int(minute),
+                second=0,
+                tzinfo=timezone.utc,
+            )
+        else:
+            amPmMatch = re.match(r"^(?P<hour>\d{1,2})(:(?P<minute>\d{2}))?\s*(?P<ampm>AM|PM)$", raw, flags=re.IGNORECASE)
+            if not amPmMatch:
+                return None
+
+            hour = int(amPmMatch.group("hour"))
+            minute = int(amPmMatch.group("minute") or "0")
+            ampm = amPmMatch.group("ampm").upper()
+
+            if ampm == "PM" and hour != 12:
+                hour += 12
+            if ampm == "AM" and hour == 12:
+                hour = 0
+
+            now = datetime.now(timezone.utc)
+            dt = datetime(
+                year=now.year,
+                month=now.month,
+                day=now.day,
+                hour=hour,
+                minute=minute,
+                second=0,
+                tzinfo=timezone.utc,
+            )
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def _normalizeEventPayload(item: dict[str, Any], *, fallbackSourceText: str = "") -> dict[str, Any] | None:
     normalized = dict(item)
+    sourceText = str(normalized.get("source_text") or normalized.get("sourceText") or fallbackSourceText or "").strip()
     title = str(normalized.get("title") or "").strip()
-    description = str(normalized.get("description") or "").strip()
-    sourceText = str(normalized.get("sourceText") or "").strip()
-
     if not title:
-        title = description or sourceText or str(normalized.get("itemType") or "Item").title()
+        title = sourceText
+    if not title:
+        return None
 
-    if not sourceText:
-        sourceText = description or title or fallbackSourceText.strip()
+    startTime = _to_iso8601(normalized.get("start_time"))
+    endTime = _to_iso8601(normalized.get("end_time"))
+    if not startTime:
+        return None
 
-    normalized["title"] = title
-    normalized["description"] = description
-    normalized["sourceText"] = sourceText
-    normalized["location"] = str(normalized.get("location") or "").strip()
+    return {
+        "type": "event",
+        "uid": str(normalized.get("uid") or uuid4()),
+        "title": title,
+        "description": None if normalized.get("description") in (None, "") else str(normalized.get("description")),
+        "start_time": startTime,
+        "end_time": endTime,
+        "all_day": bool(normalized.get("all_day") or False),
+        "location": None if normalized.get("location") in (None, "") else str(normalized.get("location")),
+    }
 
-    tags = normalized.get("tags") or []
-    if isinstance(tags, list):
-        normalized["tags"] = [str(tag).strip() for tag in tags if str(tag).strip()]
+
+def _normalizeLegacyItemPayload(item: dict[str, Any], timezoneName: str) -> tuple[dict[str, Any] | None, str | None]:
+    itemType = str(item.get("itemType") or "").strip().lower()
+
+    if itemType != "event":
+        noteText = str(item.get("sourceText") or item.get("description") or item.get("title") or "").strip()
+        return None, noteText or None
+
+    title = str(item.get("title") or "").strip()
+    if not title:
+        return None, None
+
+    date = str(item.get("date") or "").strip()
+    startTimeRaw = str(item.get("startTime") or "").strip()
+    endTimeRaw = str(item.get("endTime") or "").strip()
+    allDay = bool(item.get("allDay") or False)
+
+    if allDay and date:
+        startIso = _to_iso8601(f"{date}T00:00:00+00:00")
+        endIso = _to_iso8601(f"{date}T23:59:59+00:00")
+    elif date and startTimeRaw:
+        startIso = _to_iso8601(f"{date}T{startTimeRaw}:00+00:00")
+        endIso = _to_iso8601(f"{date}T{endTimeRaw}:00+00:00") if endTimeRaw else None
     else:
-        normalized["tags"] = []
+        startIso = None
+        endIso = None
 
-    if normalized.get("summary") is None:
-        normalized.pop("summary", None)
+    if not startIso:
+        noteText = str(item.get("sourceText") or item.get("description") or title).strip()
+        return None, noteText or None
 
-    return normalized
+    return {
+        "type": "event",
+        "uid": str(item.get("uid") or uuid4()),
+        "title": title,
+        "description": None if item.get("description") in (None, "") else str(item.get("description")),
+        "start_time": startIso,
+        "end_time": endIso,
+        "all_day": allDay,
+        "location": None if item.get("location") in (None, "") else str(item.get("location")),
+    }, None
+
+
+def _tokenize(value: str) -> set[str]:
+    return {token for token in re.findall(r"[a-zA-Z0-9']+", value.lower()) if len(token) >= 3}
+
+
+def _looks_placeholder(value: str) -> bool:
+    lowered = value.strip().lower()
+    if not lowered:
+        return False
+    if "<" in lowered and ">" in lowered:
+        return True
+    placeholderMarkers = {
+        "uuid-v4",
+        "event title",
+        "note text",
+        "iso-8601",
+        "iso 8601",
+    }
+    return any(marker in lowered for marker in placeholderMarkers)
+
+
+def _is_grounded_text(value: str, sourceTokens: set[str]) -> bool:
+    if not sourceTokens:
+        return True
+    tokens = _tokenize(value)
+    return bool(tokens.intersection(sourceTokens))
 
 
 def _normalizeDraftPayload(payload: dict[str, Any], *, fallbackSourceText: str = "") -> dict[str, Any]:
-    normalized = dict(payload)
-    normalized["timezone"] = str(normalized.get("timezone") or "UTC").strip() or "UTC"
-    summary = str(normalized.get("summary") or "").strip()
-    sourceText = str(normalized.get("sourceText") or "").strip() or fallbackSourceText.strip()
+    timezoneName = str(payload.get("timezone") or "UTC").strip() or "UTC"
+    sourceText = str(payload.get("source_text") or payload.get("sourceText") or "").strip() or fallbackSourceText.strip()
+    sourceTokens = _tokenize(sourceText)
 
-    if not summary:
-        summary = sourceText.splitlines()[0] if sourceText else "Whiteboard draft"
+    events: list[dict[str, Any]] = []
+    notes: list[str] = []
 
-    normalized["summary"] = summary
-    normalized["sourceText"] = sourceText
+    rawEvents = payload.get("events")
+    if isinstance(rawEvents, list):
+        for event in rawEvents:
+            if not isinstance(event, dict):
+                continue
+            normalizedEvent = _normalizeEventPayload(event, fallbackSourceText=sourceText)
+            if not normalizedEvent:
+                continue
 
-    items = normalized.get("items") or []
-    if isinstance(items, list):
-        normalized["items"] = [
-            _normalizeItemPayload(item, fallbackSourceText=sourceText)
-            for item in items
-            if isinstance(item, dict)
-        ]
-    else:
-        normalized["items"] = []
+            title = str(normalizedEvent.get("title") or "")
+            description = str(normalizedEvent.get("description") or "")
+            if _looks_placeholder(title) or _looks_placeholder(description):
+                continue
+            if not _is_grounded_text(title + " " + description, sourceTokens):
+                continue
 
-    return normalized
+            if normalizedEvent:
+                events.append(normalizedEvent)
+
+    rawNotes = payload.get("notes")
+    if isinstance(rawNotes, list):
+        for note in rawNotes:
+            if isinstance(note, dict):
+                noteText = str(
+                    note.get("text")
+                    or note.get("note")
+                    or note.get("content")
+                    or ""
+                ).strip()
+            else:
+                noteText = str(note or "").strip()
+            if not noteText:
+                continue
+            if _looks_placeholder(noteText):
+                continue
+            if not _is_grounded_text(noteText, sourceTokens):
+                continue
+            if noteText:
+                notes.append(noteText)
+
+    legacyItems = payload.get("items")
+    if isinstance(legacyItems, list):
+        for item in legacyItems:
+            if not isinstance(item, dict):
+                continue
+            normalizedEvent, noteText = _normalizeLegacyItemPayload(item, timezoneName)
+            if normalizedEvent:
+                title = str(normalizedEvent.get("title") or "")
+                description = str(normalizedEvent.get("description") or "")
+                if not _looks_placeholder(title) and _is_grounded_text(title + " " + description, sourceTokens):
+                    events.append(normalizedEvent)
+            if noteText:
+                if not _looks_placeholder(noteText) and _is_grounded_text(noteText, sourceTokens):
+                    notes.append(noteText)
+
+    eventTitles = {str(event.get("title") or "").strip() for event in events if isinstance(event, dict)}
+    eventTitlesLower = {title.lower() for title in eventTitles if title}
+    notes = [note for note in notes if note.strip().lower() not in eventTitlesLower]
+
+    dedupedNotes = list(dict.fromkeys(notes))
+    return {
+        "timezone": timezoneName,
+        "source_text": sourceText,
+        "events": events,
+        "notes": dedupedNotes,
+    }
 
 
 def parseCalendarDraftFromUnknown(raw: Any, *, fallbackSourceText: str = "") -> CalendarDraft:
@@ -161,40 +311,18 @@ def parseCalendarDraftFromUnknown(raw: Any, *, fallbackSourceText: str = "") -> 
         payload = _extractJsonPayload(raw)
         try:
             parsed = json.loads(payload)
-            normalized = _normalizeDraftPayload(parsed, fallbackSourceText=fallbackSourceText or payload)
+            normalized = _normalizeDraftPayload(parsed, fallbackSourceText=fallbackSourceText)
             return CalendarDraft.model_validate(normalized)
         except (json.JSONDecodeError, ValidationError):
-            return buildFallbackCalendarDraft(fallbackSourceText or raw)
+            return CalendarDraft(timezone="UTC", source_text=fallbackSourceText or raw, events=[], notes=[])
 
     if isinstance(raw, dict):
         try:
             normalized = _normalizeDraftPayload(raw, fallbackSourceText=fallbackSourceText)
             return CalendarDraft.model_validate(normalized)
         except ValidationError:
-            return buildFallbackCalendarDraft(fallbackSourceText)
+            return CalendarDraft(timezone="UTC", source_text=fallbackSourceText, events=[], notes=[])
 
-    return buildFallbackCalendarDraft(fallbackSourceText)
+    return CalendarDraft(timezone="UTC", source_text=fallbackSourceText, events=[], notes=[])
 
 
-def buildFallbackCalendarDraft(text: str, *, timezone: str = "UTC") -> CalendarDraft:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    summary = lines[0] if lines else "Whiteboard draft"
-    items = []
-
-    for line in lines:
-        items.append(
-            CalendarItem(
-                itemType="note",
-                title=line[:120],
-                description=line,
-                sourceText=line,
-                confidence=0.35,
-            )
-        )
-
-    return CalendarDraft(
-        timezone=timezone,
-        summary=summary,
-        sourceText=text,
-        items=items,
-    )

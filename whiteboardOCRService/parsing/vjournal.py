@@ -63,38 +63,20 @@ def buildVjournalDocument(*, text: str, summary: str | None = None, sourceLabel:
 
 
 def buildVjournalFromDraft(draft: CalendarDraft, *, sourceLabel: str = "whiteboard-ocr") -> str:
-    contentLines: list[str] = []
-    for index, item in enumerate(draft.items, start=1):
-        line = f"{index}. [{item.itemType.upper()}] {item.title}"
+    return buildVjournalFromNotes(draft.notes, sourceLabel=sourceLabel)
 
-        details: list[str] = []
-        if item.date:
-            details.append(f"date={item.date}")
-        if item.startTime:
-            details.append(f"start={item.startTime}")
-        if item.endTime:
-            details.append(f"end={item.endTime}")
-        if item.dueDate:
-            details.append(f"dueDate={item.dueDate}")
-        if item.dueTime:
-            details.append(f"dueTime={item.dueTime}")
-        if item.location:
-            details.append(f"location={item.location}")
-        if item.tags:
-            details.append(f"tags={','.join(item.tags)}")
-        if details:
-            line += " (" + "; ".join(details) + ")"
 
-        if item.description:
-            line += f": {item.description}"
-        contentLines.append(line)
+def buildVjournalFromNotes(notes: list[str], *, sourceLabel: str = "whiteboard-ocr") -> str:
+    cleanedNotes = [note.strip() for note in notes if note and note.strip()]
 
-    if not contentLines:
-        contentLines.append("No extracted calendar items.")
+    if not cleanedNotes:
+        return ""
 
-    body = "\n".join(contentLines)
+    body = "\n".join(f"{index}. {note}" for index, note in enumerate(cleanedNotes, start=1))
+    summary = cleanedNotes[0][:120]
+
     return buildVjournalDocument(
         text=body,
-        summary=draft.summary or "Whiteboard draft",
+        summary=summary,
         sourceLabel=sourceLabel,
     )

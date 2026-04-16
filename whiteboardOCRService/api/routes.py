@@ -50,23 +50,23 @@ async def debugOcrPreview(
                 "value": artifact.llmRawResponse,
             },
             "stage4_normalizedDraft": {
-                "description": "Calendar draft after normalization (repairs weak LLM fields)",
-                "value": artifact.calendarDraft,
+                "description": "Normalized extraction output: events JSON + notes list",
+                "value": {
+                    "events": artifact.events,
+                    "notesVjournal": artifact.notesVjournal,
+                },
             },
         },
         "userPayload": {
             "description": "Final object returned to mobile app for user review",
             "text": artifact.text,
-            "calendarDraft": artifact.calendarDraft,
-        },
-        "serverArtifact": {
-            "description": "Server-side only (not exposed to app)",
-            "vjournal": artifact.vjournal,
+            "events": artifact.events,
+            "notesVjournal": artifact.notesVjournal,
         },
         "workflow": {
-            "currentStep": "User reviews calendarDraft and edits (if needed)",
-            "nextStep": "POST /api/v1/jobs/{jobId}/approve with edited draft",
-            "finalStep": "Server appends approved VJOURNAL to e-ink device",
+            "currentStep": "User reviews events and notes",
+            "nextStep": "POST /api/v1/jobs/{jobId}/approve with edited events/notes",
+            "finalStep": "Server uploads returned ICS payload to e-ink endpoint",
         },
     }
     return comparison
@@ -117,7 +117,8 @@ async def getJobResult(jobId: str) -> JobResultResponse:
             jobId=job.jobId,
             status=job.status,
             text="",
-            calendarDraft={},
+            events=[],
+            notesVjournal="",
             structured={},
             error=job.error or "Unknown processing error",
         )
@@ -129,7 +130,8 @@ async def getJobResult(jobId: str) -> JobResultResponse:
         jobId=job.jobId,
         status=job.status,
         text=job.text or "",
-        calendarDraft=(job.structured or {}).get("calendarDraft", {}),
+        events=(job.structured or {}).get("events", []),
+        notesVjournal=(job.structured or {}).get("notesVjournal", ""),
         structured=job.structured or {},
         error=job.error,
     )
@@ -148,29 +150,35 @@ async def approveJobDraft(jobId: str, payload: ApproveDraftRequest) -> ApproveDr
         raise HTTPException(status_code=409, detail=f"Job is not completed yet. Current status: {job.status}.")
 
     parsedDraft = parseCalendarDraftFromUnknown(
-        payload.calendarDraft,
+        {
+            "events": payload.events,
+            "notes": payload.notes,
+            "source_text": job.text or "",
+        },
         fallbackSourceText=job.text or "",
     )
-    approvedDraft = parsedDraft.model_dump()
-    vjournal = buildVjournalFromDraft(parsedDraft)
+    approvedEvents = [event.model_dump() for event in parsedDraft.events]
+    notesVjournal = buildVjournalFromDraft(parsedDraft)
 
     structured = dict(job.structured or {})
-    structured["calendarDraft"] = approvedDraft
+    structured["events"] = approvedEvents
+    structured["notes"] = parsedDraft.notes
+    structured["notesVjournal"] = notesVjournal
     structured["approval"] = {
         "approvedAt": datetime.now(timezone.utc).isoformat(),
         "status": "approved",
     }
-    structured["serverVjournal"] = vjournal
     jobStore.updateStructured(jobId, structured=structured)
 
     return ApproveDraftResponse(
         jobId=job.jobId,
         status=job.status,
-        approvedCalendarDraft=approvedDraft,
+        approvedEvents=approvedEvents,
+        notesVjournal=notesVjournal,
         uploadArtifact={
             "contentType": "text/calendar",
             "fileName": f"{job.jobId}.ics",
-            "payload": vjournal,
+            "payload": notesVjournal,
         },
     )
 

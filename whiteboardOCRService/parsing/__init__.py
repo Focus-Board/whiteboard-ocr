@@ -1,20 +1,19 @@
 from .calendarDraft import (
 	CalendarDraft,
-	CalendarItem,
-	buildFallbackCalendarDraft,
+	CalendarEvent,
 	buildLlmExtractionPrompt,
 	getCalendarDraftTemplate,
 	parseCalendarDraftFromUnknown,
 )
-from .vjournal import buildVjournalDocument, buildVjournalFromDraft
+from .vjournal import buildVjournalDocument, buildVjournalFromDraft, buildVjournalFromNotes
 
 __all__ = [
 	"CalendarDraft",
-	"CalendarItem",
-	"buildFallbackCalendarDraft",
+	"CalendarEvent",
 	"buildLlmExtractionPrompt",
 	"getCalendarDraftTemplate",
 	"parseCalendarDraftFromUnknown",
 	"buildVjournalDocument",
+	"buildVjournalFromNotes",
 	"buildVjournalFromDraft",
 ]

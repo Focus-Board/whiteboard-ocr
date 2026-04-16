@@ -53,7 +53,9 @@ class LocalJsonLlmManager:
                     "content": (
                         "You are a strict information extraction engine. "
                         "Return only valid JSON and no markdown. "
-                        "Extract tasks, events, and notes into the provided JSON shape."
+                        "Extract only events and notes into the provided JSON shape. "
+                        "Do not create tasks. "
+                        "Event times must be ISO-8601 with timezone offset."
                     ),
                 },
                 {

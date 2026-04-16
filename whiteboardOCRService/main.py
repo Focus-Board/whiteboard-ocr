@@ -47,7 +47,8 @@ async def performOcr(file: UploadFile = File(...)) -> dict[str, object]:
     result = processImageBytes(imageBytes, ocrManager)
     return {
         "text": result.text,
-        "calendarDraft": result.structured.get("calendarDraft", {}),
+        "events": result.structured.get("events", []),
+        "notesVjournal": result.structured.get("notesVjournal", ""),
     }
 
 app.include_router(jobsRouter)
